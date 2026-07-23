@@ -1,0 +1,89 @@
+{
+  "name": "@fastpix/supabase",
+  "version": "0.1.0",
+  "description": "Integrate your FastPix account with your Supabase project: edge functions, migrations, a pgmq queue and cron.",
+  "type": "module",
+  "bin": {
+    "fastpix-supabase": "./dist/index.js"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "exports": {
+    ".": {
+      "deno": "./dist/deno.js",
+      "require": "./dist/index.cjs",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./deno": "./dist/deno.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "prebuild": "npm run clean",
+    "build": "tsup",
+    "test": "node --test",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "migrate": "node src/index.mjs migrate",
+    "backfill": "node src/index.mjs backfill",
+    "prepublishOnly": "npm run lint && npm test && npm run build"
+  },
+  "files": [
+    "dist/index.js",
+    "dist/index.cjs",
+    "dist/deno.js",
+    "dist/migrations",
+    "LICENSE",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "fastpix",
+    "supabase",
+    "supabase sync",
+    "edge functions",
+    "webhooks",
+    "webhook sync",
+    "postgres",
+    "postgres sync",
+    "database sync",
+    "sync engine",
+    "video",
+    "live streaming",
+    "media database",
+    "event ingestion",
+    "pgmq",
+    "cli"
+  ],
+  "author": {
+    "name": "FastPix-Dev",
+    "email": "devs@fastpix.com",
+    "url": "https://www.fastpix.com/"
+  },
+  "license": "MIT",
+  "homepage": "https://www.fastpix.com/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FastPix/fastpix-supabase.git"
+  },
+  "bugs": {
+    "url": "https://github.com/FastPix/fastpix-supabase/issues",
+    "email": "devs@fastpix.com"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@fastpix/fp-sync-engine": "^0.1.1",
+    "postgres": "^3.4.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.7.0",
+    "prettier": "^3.9.5",
+    "tsup": "^8.5.0"
+  }
+}
