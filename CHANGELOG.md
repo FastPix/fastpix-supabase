@@ -2,9 +2,9 @@
 
 All notable changes to `@fastpix/supabase` are documented in this file.
 
-## [0.1.0]
+## [0.1.0] - beta version
 
-Initial release.
+Initial  beta release.
 
 ### Added
 
