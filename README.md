@@ -1,112 +1,178 @@
 # @fastpix/supabase
 
-`@fastpix/supabase` contains a CLI for integrating your FastPix account with your Supabase account. Setting this up will:
+`@fastpix/supabase` provides a CLI that integrates your FastPix account with your Supabase project. The integration mirrors your FastPix media, live streams, and uploads into Postgres, and keeps them current from webhooks.
 
-1. Create a `fastpix` schema that contains tables for:
-   - `media` ([Media](https://docs.fastpix.io))
-   - `live_streams` ([Live Streams](https://docs.fastpix.io))
-   - `uploads` ([Direct Uploads](https://docs.fastpix.io))
-   - `webhook_events` (Webhook events)
-   - `sync_state` (Backfill/reconcile bookkeeping)
-2. Set up edge functions for receiving webhooks and keeping data in the `fastpix` schema up-to-date
+Setting up the integration does the following:
 
-## Getting started
+1. Creates a `fastpix` schema that contains the following tables:
+   - `media`, for [Media](https://docs.fastpix.io)
+   - `live_streams`, for [Live Streams](https://docs.fastpix.io)
+   - `uploads`, for [Direct Uploads](https://docs.fastpix.io)
+   - `webhook_events`, for the raw webhook event log
+   - `sync_state`, for backfill and reconcile bookkeeping
+2. Creates Edge Functions that receive webhooks and keep the data in the `fastpix` schema up to date.
 
-**Dependencies**
+## Table of contents
 
-Before setting this up, you should already have Supabase initialized in your project (your project should already have a `supabase` directory). If you have not already done this, run `npx supabase init` and see [this guide](https://supabase.com/docs/reference/cli/supabase-init).
+- [Before you begin](#before-you-begin)
+- [Set up the integration locally](#set-up-the-integration-locally)
+  - [Run init](#run-init)
+  - [Create the Vault secrets](#create-the-vault-secrets)
+  - [Run the webhook locally](#run-the-webhook-locally)
+  - [Verify that the integration works](#verify-that-the-integration-works)
+- [Understand how syncing works](#understand-how-syncing-works)
+- [Backfill and reconcile data](#backfill-and-reconcile-data)
+- [Trigger a function when an event syncs](#trigger-a-function-when-an-event-syncs)
+- [Deploy to production](#deploy-to-production)
+- [Secure the tables](#secure-the-tables)
+- [Upgrade the engine](#upgrade-the-engine)
+- [CLI reference](#cli-reference)
+- [Environment variable reference](#environment-variable-reference)
+- [Troubleshoot](#troubleshoot)
 
-**Local Setup**
+## Before you begin
 
-You should run this after your supabase project is running with `npx supabase start`
+Make sure you have the following:
 
-Run init and follow the prompts. Then env vars should be in the `.env` file within the `supabase/functions` directory.
+- Node.js version 20 or later.
+- Docker, which local Supabase requires.
+- A Supabase project initialized in your repository. If your project doesn't contain a `supabase` directory, run `npx supabase init`. For more information, see [Supabase CLI init](https://supabase.com/docs/reference/cli/supabase-init).
+- A running local Supabase instance. To start one, run `npx supabase start`.
+- Your Supabase service-role key. To find it, run `npx supabase status -o env`.
+- A FastPix account with an API token ID and token secret. The `init` command prompts you for both.
+- Access to the FastPix dashboard, so that you can create a webhook and copy its signing secret.
+
+## Set up the integration locally
+
+### Run init
+
+With your local Supabase instance running, run the `init` command and follow the prompts:
 
 ```bash
 npx @fastpix/supabase init
 ```
 
-This will:
+The command does the following:
 
-- Create the `fastpix` schema and corresponding tables
-- Create four functions in `/supabase/functions` (`fastpix-webhook`, `fastpix-worker`, `fastpix-reconcile`, `fastpix-backfill`) which use the `@fastpix/fp-sync-engine` package to sync your data
-- Set up a pgmq job queue and two Supabase Cron jobs (drain + nightly reconcile) that drive the sync
-- Prompt you to configure the `FASTPIX_TOKEN_ID`, `FASTPIX_TOKEN_SECRET`, and `FASTPIX_WEBHOOK_SECRET`
-- Set `verify_jwt` for each function in `config.toml` (the webhook is set to `false` because FastPix signs requests instead of sending a Supabase JWT)
-  - If Supabase is already running, you need to restart the instance (`supabase stop` and `supabase start`) for the `config.toml` changes to take effect properly
+- Creates the `fastpix` schema and its tables.
+- Creates four functions in `supabase/functions`: `fastpix-webhook`, `fastpix-worker`, `fastpix-reconcile`, and `fastpix-backfill`. These functions use the `@fastpix/fp-sync-engine` package to sync your data.
+- Sets up a pgmq job queue and two Supabase Cron jobs, a queue drain and a nightly reconcile, that drive the sync.
+- Prompts you to configure `FASTPIX_TOKEN_ID`, `FASTPIX_TOKEN_SECRET`, and `FASTPIX_WEBHOOK_SECRET`. The command writes these to `supabase/functions/.env`.
+- Sets `verify_jwt` for each function in `config.toml`. The webhook is set to `false` because FastPix signs its requests instead of sending a Supabase JWT.
 
-Everything `init` writes is copy-if-absent, so re-running it is safe and will never overwrite a file you have edited.
+Everything `init` writes is copy-if-absent, so re-running the command is safe and never overwrites a file that you edited.
 
-**Vault secrets**
+> **NOTE:** \
+>If Supabase was already running when you ran `init`, restart the instance with `npx supabase stop` and `npx supabase start` so that the `config.toml` changes take effect.
 
-The two cron jobs call your edge functions over HTTP and read the URL and key from Supabase Vault, so they are never committed in a migration. Until these exist the queue fills but nothing drains, and nothing reports an error. In the SQL Editor:
+### Create the Vault secrets
+
+The two cron jobs call your Edge Functions over HTTP. They read the function URL and the service-role key from Supabase Vault, so that neither value is committed in a migration.
+
+Until these secrets exist, the queue fills but nothing drains, and nothing reports an error.
+
+In the SQL Editor, run the following:
 
 ```sql
 select vault.create_secret('http://host.docker.internal:54321/functions/v1', 'fastpix_functions_url');
 select vault.create_secret('<SERVICE_ROLE_KEY>', 'fastpix_service_role_key');
 ```
 
-Locally the URL must be reachable from inside the Postgres container, so use `host.docker.internal` rather than `localhost`. Your service-role key is in `npx supabase status -o env`.
+Locally, the URL must be reachable from inside the Postgres container, so use `host.docker.internal` rather than `localhost`. To find your service-role key, run `npx supabase status -o env`.
 
-**Running the Webhook locally**
+### Run the webhook locally
 
-`@fastpix/supabase` handles webhooks & keeping data updated in the `fastpix` schema.
+1. Serve the Edge Functions on port 54321:
 
-To test the webhook locally, run:
+   ```bash
+   npx supabase functions serve
+   ```
 
-```bash
-npx supabase functions serve
-```
+2. Expose the functions to the internet with a tunneling service such as ngrok. Your public webhook URL has a format like `https://d99d3b847eb8.ngrok-free.app/functions/v1/fastpix-webhook`.
 
-This will run the Edge functions locally on port 54321. To test with FastPix, you need to expose the function to the internet. Use a service like ngrok for this.
+3. In the FastPix dashboard, go to **Org Settings** > **Webhooks** > **Create new webhook** and enter that URL.
 
-Once done, get the public URL of your function (it should have a format like `https://d99d3b847eb8.ngrok-free.app/functions/v1/fastpix-webhook`) and set it in FastPix under **Org Settings → Webhooks → Create new webhook**.
+4. Copy the webhook secret from FastPix into `FASTPIX_WEBHOOK_SECRET` in `supabase/functions/.env`.
 
-After that, copy the webhook secret from FastPix into `FASTPIX_WEBHOOK_SECRET` in your `.env` file.
+### Verify that the integration works
 
-**Verify that it's working**
+1. In the FastPix dashboard, confirm that you're in the correct environment, then upload a media asset.
 
-Go to your FastPix dashboard, make sure you're in the correct environment and upload a media asset. Then navigate to your local Supabase dashboard and you should see a row for the media in the `fastpix` schema `media` table and the `mediaId` should match the ID for the media in the FastPix dashboard.
+2. In your local Supabase dashboard, open the `media` table in the `fastpix` schema. A row appears for the media, and its `mediaId` matches the ID shown in the FastPix dashboard.
 
-If the row doesn't appear, the event log tells you where it stopped:
+If the row doesn't appear, the event log shows where processing stopped:
 
 ```sql
 select "type", "processStatus", "lastError" from fastpix.webhook_events
 order by "receivedAt" desc limit 10;
 ```
 
-No rows means FastPix isn't reaching your webhook — check the tunnel URL and the webhook secret. Rows stuck at `received` mean nothing is draining the queue, so check the Vault secrets above.
+For how to interpret the result, see [Troubleshoot](#troubleshoot).
 
-> Column names match the FastPix API, so they are camelCase and need double quotes in SQL: `select "mediaId" from fastpix.media` — not `select mediaId`.
+> **NOTE:**
+> - Column names match the FastPix API, so they're camelCase and require double quotes in SQL. Use `select "mediaId" from fastpix.media`, not `select mediaId`.
 
-> The `fastpix` schema is not exposed in the `[api]` section of `config.toml`. These tables are written by the service role and are not readable from your client until you expose a safe view — see step 8 of Production Deployment.
+> - The `fastpix` schema isn't exposed in the `[api]` section of `config.toml`. The service role writes these tables, and your client can't read them until you expose a safe view. For more information, see [Secure the tables](#secure-the-tables).
 
-## Backfilling Existing Data
+## Understand how syncing works
 
-If you already have FastPix media or live streams in your account, you can backfill them to your Supabase database using the CLI command:
+Most FastPix integrations need to save data into a database. You can add videos to FastPix in the following ways:
+
+- Upload them directly with the Direct Uploads API.
+- Provide a URL that points to a publicly available video file.
+- Upload them in the FastPix dashboard.
+
+When you upload a video or audio file to FastPix, it becomes a media asset.
+
+### What the integration stores
+
+An application typically saves FastPix information such as the media ID, playback ID, duration, and aspect ratio. `@fastpix/supabase` saves all of this for you under the `fastpix` schema.
+
+An application also tracks information that FastPix doesn't own, such as the following:
+
+- Which user uploaded the video.
+- Structural details, such as whether the video belongs to a series or relates to other videos.
+- Presentation details, such as descriptions, summaries, and chapter markers.
+- Which users can view the video.
+
+`@fastpix/supabase` doesn't save this kind of information, because it's an application-level concern.
+
+> **NOTE:** \
+FastPix media includes a `metadata` field, which the integration saves to the `metadata` JSON column in the `media` table. Higher-level concepts such as titles, chapters, and permissions remain application-level concerns.
+
+### How webhooks are processed
+
+The integration stores webhooks first and processes them second. `fastpix-webhook` verifies the signature and puts the event on the queue, and `fastpix-worker` drains that queue. As a result, a failed projection never loses a delivery.
+
+Events that carry only a fragment of a record, such as playback IDs, tracks, or simulcast targets, are recorded and acknowledged but not projected. FastPix sends a parent `video.media.updated` event afterward that carries the whole record. The nightly reconcile is the backstop for anything that never arrives.
+
+## Backfill and reconcile data
+
+If your FastPix account already contains media or live streams, backfill them into your Supabase database:
 
 ```bash
 npx @fastpix/supabase backfill
 ```
 
-This will prompt you for the database URL where it will store the data and your FastPix token and secret to sync the data. Add `media` or `live_streams` to sync just one type. It saves its place as it goes, so if it stops you can run it again and it continues.
-
-You can also heal any webhooks you missed by re-fetching resources active in the last N hours (24 by default):
+The command prompts you for the database URL where it stores the data, and for your FastPix token ID and secret. To sync a single object type, pass it as an argument:
 
 ```bash
-npx @fastpix/supabase reconcile        # last 24h
-npx @fastpix/supabase reconcile 48     # last 48h
+npx @fastpix/supabase backfill media
+npx @fastpix/supabase backfill live_streams
 ```
 
-There is also a `migrate` command, which creates or updates the `fastpix` tables without copying any files. Run it after upgrading `@fastpix/fp-sync-engine`, since an engine upgrade can change column types:
+Backfill saves its place as it goes, so if it stops, you can run it again and it continues from where it left off.
+
+To heal webhooks that you missed, re-fetch resources that were active in the last *N* hours:
 
 ```bash
-npx @fastpix/supabase migrate
+npx @fastpix/supabase reconcile        # last 24 hours
+npx @fastpix/supabase reconcile 48     # last 48 hours
 ```
 
-Each generated function is a three-line entry point that imports its handler from `@fastpix/supabase/deno`, pinned to an exact version in that function's `deno.json` — that pin, not your `package.json`, decides which engine your deployed webhooks run. Because `init` never overwrites existing files, upgrading the package does not update the functions you already have: bump those pins by hand, or delete the four directories and re-run `init`. If the two disagree, the CLI commands run the new engine while your webhooks still run the old one.
+### Use the sync engine directly
 
-If you prefer not to use the command, you can use the sync-engine directly:
+If you'd rather not use the CLI, call the sync engine from your own code:
 
 ```typescript
 import { FastPixSync } from "@fastpix/fp-sync-engine";
@@ -118,201 +184,136 @@ const fastpixSync = new FastPixSync({
   fastpixWebhookSecret: "your-fastpix-webhook-secret",
 });
 
-// Backfill all data
+// Backfill all data.
 await fastpixSync.syncBackfill({ object: "all" });
 
-// Backfill specific object types
+// Backfill specific object types.
 await fastpixSync.syncBackfill({ object: "media" });
 await fastpixSync.syncBackfill({ object: "live_streams" });
 
-// Reconcile resources active in the last 24h
+// Reconcile resources active in the last 24 hours.
 const result = await fastpixSync.reconcileRecent({ sinceHours: 24 });
 console.log(
   `Reconciled ${result.media} media, ${result.liveStreams} live streams`,
 );
 ```
 
-## Core Concepts
+## Trigger a function when an event syncs
 
-Most FastPix integrations require **saving data into a database**. The general flow to use FastPix is:
+You can trigger your own Edge Function when a specific event finishes syncing. For example, you can run content moderation when a media asset becomes ready.
 
-- Videos can be uploaded directly to FastPix with the Direct Uploads API
-- Videos can be uploaded with a URL pointing to a publicly available video file
-- Videos can be uploaded directly in the FastPix dashboard
+Workflows run on the pgmq queue and the Supabase Cron jobs that `init` already created, so complete the [local setup](#set-up-the-integration-locally) first. You only need to map an event type to one or more function names.
 
-When a video (or audio file) is uploaded to FastPix, it becomes a media asset.
+1. Define the workflow with the `FASTPIX_WORKFLOWS` secret:
 
-### Saving data associated with each video
+   ```bash
+   npx supabase secrets set FASTPIX_WORKFLOWS='{"video.media.ready":["content-moderation"]}'
+   ```
 
-When saving data into a database, typically the application would save information about the FastPix media, like:
+   With this mapping, when the `video.media.ready` event fires and the `fastpix.media` row is already current, the integration runs your Edge Function named `content-moderation`.
 
-- Media ID
-- Playback ID
-- Duration
-- Aspect ratio
+2. Create the function:
 
-`@fastpix/supabase` will save all this data for you under the `fastpix` schema.
+   ```bash
+   npx supabase functions new content-moderation
+   ```
 
-In addition to the information from FastPix, the application also keeps track of things like:
+3. Open `supabase/functions/content-moderation/index.ts` and add your handler. Your function receives `{ eventId, type, objectType, objectId }`.
 
-- Which user uploaded the video
-- Structural/organization things, like if the video is part of a series or related to other videos
-- Video details like: description, summary, chapter markers, etc.
-- Who has access to view the video
+   ```typescript
+   Deno.serve(async (req) => {
+     try {
+       const { objectId } = await req.json();
+       if (!objectId) {
+         console.log("No objectId in payload");
+         return new Response("No objectId in payload", { status: 500 });
+       }
 
-`@fastpix/supabase` does not save this kind of information, which is an application-level concern.
+       console.log(`Running moderation for media: ${objectId}`);
+       // The fastpix.media row for objectId is already up to date.
+       // Call APIs, write to your database, or run other logic here.
+       return new Response("Moderation complete", { status: 200 });
+     } catch (error) {
+       console.error("Error running content-moderation.ts:", error);
+       return new Response(JSON.stringify({ error: "500" }), {
+         status: 500,
+         headers: { "Content-Type": "application/json" },
+       });
+     }
+   });
+   ```
 
-> FastPix media has a `metadata` field which will be saved under the `metadata` JSON column in the `media` table. Higher-level concepts (titles, chapters, permissions, etc.) are still considered application-level concerns.
+4. Register the function in `config.toml` with `verify_jwt = true`, because the worker sends the service-role key:
 
-Webhooks are stored first and processed second: `fastpix-webhook` verifies the signature and puts the event on the queue, and `fastpix-worker` drains that queue. A delivery is never lost because a projection failed. Events that carry only a fragment of a record — playback IDs, tracks, simulcast targets — are recorded and acknowledged but not projected, because FastPix sends a parent `video.media.updated` afterwards that carries the whole record. The nightly reconcile is the backstop for anything that never arrived.
+   ```toml
+   [functions.content-moderation]
+   verify_jwt = true
+   ```
 
-## Workflows on Supabase
+**Caution:** Dispatch is at-least-once, so your function might run more than once for the same event. Make it safe to repeat.
 
-You can trigger your own edge function when a specific event finishes syncing — for example, running content moderation when a media asset becomes ready.
+### Test a workflow
 
-**Env setup**
+Run `npx supabase functions serve` to execute all of your functions, then create a media asset either programmatically or by uploading a video in the FastPix dashboard. When the media becomes ready for playback, the `video.media.ready` event fires and your `content-moderation` function runs.
 
-Workflows run on the pgmq queue and Supabase Cron jobs, which `init` already set up. You only have to map an event type to one or more function names with the `FASTPIX_WORKFLOWS` secret. You should only run this after you have gone through the `@fastpix/supabase init` flow.
+## Deploy to production
 
-Define a workflow and when it should run:
+1. Link your project:
 
-```bash
-npx supabase secrets set FASTPIX_WORKFLOWS='{"video.media.ready":["content-moderation"]}'
-```
+   ```bash
+   npx supabase login
+   npx supabase link --project-ref <ref>
+   ```
 
-This means that when the `video.media.ready` event fires (and the `fastpix.media` row is already up to date), it will run your Supabase Edge Function called `content-moderation`.
+2. Run the migrations. `db push` applies the queue and cron migrations, and `migrate` creates the `fastpix` tables. Find your connection string in the dashboard under **Connect**.
 
-Create the Supabase Edge Function:
+   ```bash
+   npx supabase db push
+   SUPABASE_DB_URL='postgresql://…' npx @fastpix/supabase migrate
+   ```
 
-```bash
-npx supabase functions new content-moderation
-```
+3. Add the Vault secrets that the cron jobs need. In the dashboard, open the SQL Editor and run the following:
 
-Open up `supabase/functions/content-moderation/index.ts`
+   ```sql
+   select vault.create_secret('https://<ref>.supabase.co/functions/v1', 'fastpix_functions_url');
+   select vault.create_secret('<service-role-key>', 'fastpix_service_role_key');
+   ```
 
-```tsx
-Deno.serve(async (req) => {
-  try {
-    const { objectId } = await req.json();
-    if (!objectId) {
-      console.log("No objectId in payload");
-      return new Response("No objectId in payload", { status: 500 });
-    }
+   Re-running these statements after the secrets exist fails with a duplicate key error. To change a value, update it instead:
 
-    console.log(`Running moderation for media: ${objectId}`);
-    // The fastpix.media row for objectId is already up to date.
-    // do your logic to make API calls, write data into your db, etc
-    return new Response("Moderation complete", { status: 200 });
-  } catch (error) {
-    console.error("Error running content-moderation.ts:", error);
-    return new Response(JSON.stringify({ error: "500" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-});
-```
+   ```sql
+   select vault.update_secret(
+     (select id from vault.secrets where name = 'fastpix_service_role_key'), '<new-key>');
+   ```
 
-Your function receives `{ eventId, type, objectType, objectId }`.
+4. Set the secrets for your Edge Functions, either manually in the dashboard or from your `.env` file. Confirm that `supabase/functions/.env` holds the correct credentials first.
 
-Add it to `config.toml` with `verify_jwt = true` (the worker sends the service role key):
+   ```bash
+   npx supabase secrets set --env-file ./supabase/functions/.env
+   npx supabase secrets list
+   ```
 
-```toml
-[functions.content-moderation]
-verify_jwt = true
-```
+5. Push the config. This step sends the `verify_jwt` settings. Without it, the webhook returns `401`.
 
-**Testing**
+   ```bash
+   npx supabase config push
+   ```
 
-To test, run `supabase functions serve`, this will execute all created functions and then try creating a media asset and see that your content-moderation function runs. This will trigger the `video.media.ready` event when the media is ready for playback. You can do this either by creating a media asset programmatically, or by uploading a video directly in the FastPix dashboard.
+6. Deploy the functions:
 
-Dispatch is at-least-once, so your function may run more than once for the same event — make it safe to repeat.
+   ```bash
+   npx supabase functions deploy
+   ```
 
-**Troubleshooting**
+7. Set up the production webhook. After you deploy `fastpix-webhook`, its URL appears in the dashboard under **Edge Functions**. As in [Run the webhook locally](#run-the-webhook-locally), create a webhook in FastPix with that URL, then set `FASTPIX_WEBHOOK_SECRET` in the Supabase dashboard to the new value.
 
-If the Cron returns bearer token issues, make sure you have properly set the `fastpix_service_role_key` in the vault with the `SERVICE_ROLE_KEY`.
+8. [Secure the tables](#secure-the-tables). They're unsecured until you do.
 
-You can find this in the Supabase dashboard under Integrations → Vault and check what value is set for `fastpix_service_role_key`. Note that vault values are loaded/modified when migrations are applied.
+## Secure the tables
 
-In any case, if you want to test ignoring this, you can run the functions with JWT verification disabled using the command:
+**Warning:** Until you complete this section, the `fastpix` tables have no row-level security. `live_streams` holds `streamKey` and `srtSecret`, which let anyone stream into your account, and `webhook_events` stores raw payloads that can contain those same secrets. Never expose either table to your client.
 
-```bash
-npx supabase functions serve --no-verify-jwt
-```
-
-## Production Deployment
-
-To deploy to a Supabase project, you need to do the following:
-
-**1. Link your project:**
-
-```bash
-npx supabase login
-npx supabase link --project-ref <ref>
-```
-
-**2. Run migrations:**
-
-Once linked, run the migrations in your project with the command:
-
-```bash
-npx supabase db push
-SUPABASE_DB_URL='postgresql://…' npx @fastpix/supabase migrate
-```
-
-`db push` applies the queue/cron migrations; `migrate` creates the `fastpix` tables (the connection string is under Dashboard → Connect).
-
-**3. Add the Vault secrets** the cron jobs need, in Dashboard → SQL Editor:
-
-```sql
-select vault.create_secret('https://<ref>.supabase.co/functions/v1', 'fastpix_functions_url');
-select vault.create_secret('<service-role-key>', 'fastpix_service_role_key');
-```
-
-Re-running these errors with a duplicate key once they exist. To change a value, update it instead:
-
-```sql
-select vault.update_secret(
-  (select id from vault.secrets where name = 'fastpix_service_role_key'), '<new-key>');
-```
-
-**4. Set secrets for Edge Functions:**
-
-You can do this in 2 ways:
-
-- Set manually in the Dashboard
-- Run the command:
-
-```bash
-npx supabase secrets set --env-file ./supabase/functions/.env
-npx supabase secrets list
-```
-
-Make sure you have the `.env` file in the functions folder with your correct credentials.
-
-**5. Push config:**
-
-```bash
-npx supabase config push
-```
-
-This sends the `verify_jwt` settings — without it the webhook returns 401.
-
-**6. Deploy functions:**
-
-Once ready, deploy the functions with:
-
-```bash
-npx supabase functions deploy
-```
-
-**7. Set up the webhook:**
-
-When everything is ready, we need to properly set the `FASTPIX_WEBHOOK_SECRET`. Once the fastpix-webhook is deployed in Supabase, the URL will appear in Dashboard → Edge Functions.
-
-Similar to the "Running the Webhook locally" section, create the webhook in FastPix with that URL and set the `FASTPIX_WEBHOOK_SECRET` in the Supabase Dashboard with the new value.
-
-**8. Lock down the tables** (they are unsecured until you do), in the SQL Editor:
+In the SQL Editor, grant access to the service role and enable row-level security on every table:
 
 ```sql
 grant usage on schema fastpix to service_role;
@@ -326,6 +327,71 @@ alter table fastpix.uploads        enable row level security;
 alter table fastpix.sync_state     enable row level security;
 ```
 
-Enabling RLS with no policies denies everyone except the service role, which is the safe default. To show data in your app, make a view of only the safe columns.
+Enabling row-level security with no policies denies everyone except the service role, which is the safe default. To show data in your app, create a view that exposes only the safe columns.
 
-Don't expose `live_streams` — it holds `streamKey` and `srtSecret`, which let anyone stream into your account. `webhook_events` needs the same care, since raw payloads can contain those same secrets.
+## Upgrade the engine
+
+Each generated function is a three-line entry point that imports its handler from `@fastpix/supabase/deno`, pinned to an exact version in that function's `deno.json`. That pin, not your `package.json`, determines which engine your deployed webhooks run.
+
+Because `init` never overwrites existing files, upgrading the package doesn't update functions that you already have. If the pin and your installed package disagree, the CLI commands run the new engine while your webhooks still run the old one.
+
+To upgrade, do one of the following:
+
+- Bump the version pin in each function's `deno.json` by hand.
+- Delete the four function directories and re-run `npx @fastpix/supabase init`.
+
+After you upgrade `@fastpix/fp-sync-engine`, run `migrate`, because an engine upgrade can change column types:
+
+```bash
+npx @fastpix/supabase migrate
+```
+
+## CLI reference
+
+| Command | Description |
+|---|---|
+| `npx @fastpix/supabase init` | Creates the schema, the four Edge Functions, the pgmq queue, and the cron jobs, then prompts for credentials. Copy-if-absent, so it's safe to re-run. |
+| `npx @fastpix/supabase backfill [media\|live_streams]` | Imports existing FastPix records. Omit the argument to import everything. Resumable. |
+| `npx @fastpix/supabase reconcile [hours]` | Re-fetches resources active in the last *N* hours. Defaults to 24. |
+| `npx @fastpix/supabase migrate` | Creates or updates the `fastpix` tables without copying any files. Run after an engine upgrade. |
+
+## Environment variable reference
+
+Set the following variables in `supabase/functions/.env` for local development, and with `npx supabase secrets set` in production.
+
+| Variable | Required by | Description |
+|---|---|---|
+| `FASTPIX_WEBHOOK_SECRET` | All four functions | The FastPix webhook signing secret, used to verify request signatures. Copy it from the FastPix dashboard. |
+| `FASTPIX_TOKEN_ID` | Worker, reconcile, backfill | The FastPix API token ID, used to re-fetch records. |
+| `FASTPIX_TOKEN_SECRET` | Worker, reconcile, backfill | The FastPix API token secret. |
+| `FASTPIX_WORKFLOWS` | Worker | Optional. A JSON map of event types to Edge Function names. For more information, see [Trigger a function when an event syncs](#trigger-a-function-when-an-event-syncs). |
+| `SUPABASE_DB_URL` | The `migrate` command | The Postgres connection string. Supabase injects this into Edge Functions. Find it in the dashboard under **Connect**. |
+
+The following secrets live in Supabase Vault rather than in your environment:
+
+| Secret | Description |
+|---|---|
+| `fastpix_functions_url` | The base URL that the cron jobs call. Use `http://host.docker.internal:54321/functions/v1` locally. |
+| `fastpix_service_role_key` | The service-role key that the cron jobs send as a bearer token. |
+
+## Troubleshoot
+
+**No rows in `fastpix.webhook_events`.** FastPix isn't reaching your webhook. Check that your tunnel URL is current and that the webhook secret in FastPix matches `FASTPIX_WEBHOOK_SECRET`.
+
+**Rows stuck at `received`.** Nothing is draining the queue. Confirm that both Vault secrets exist and hold the correct values. See [Create the Vault secrets](#create-the-vault-secrets).
+
+**The webhook returns 401 in production.** You didn't push the config, so `verify_jwt` is still `true` for `fastpix-webhook`. Run `npx supabase config push`.
+
+**The cron jobs report bearer token errors.** The `fastpix_service_role_key` Vault secret is missing or wrong. In the dashboard, go to **Integrations** > **Vault** and check its value. Vault values load when migrations are applied.
+
+To test while ignoring JWT verification, serve the functions with verification disabled:
+
+```bash
+npx supabase functions serve --no-verify-jwt
+```
+
+**`config.toml` changes have no effect.** Restart your local instance with `npx supabase stop` and `npx supabase start`.
+
+**`vault.create_secret` fails with a duplicate key error.** The secret already exists. Update it instead of creating it. See step 3 of [Deploy to production](#deploy-to-production).
+
+**A SQL query returns a column-not-found error.** Column names are camelCase and need double quotes: `select "mediaId" from fastpix.media`.
