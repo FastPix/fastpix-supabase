@@ -1,0 +1,15 @@
+node_modules/
+
+# Build output. Published to npm via `files`, rebuilt by `prepublishOnly` — never committed.
+dist/
+
+# `npm pack` output
+*.tgz
+
+.env
+.env.*
+
+*.log
+npm-debug.log*
+
+.DS_Store
