@@ -63,7 +63,7 @@ The command does the following:
 Everything `init` writes is copy-if-absent, so re-running the command is safe and never overwrites a file that you edited.
 
 > **NOTE:** \
->If Supabase was already running when you ran `init`, restart the instance with `npx supabase stop` and `npx supabase start` so that the `config.toml` changes take effect.
+> If Supabase was already running when you ran `init`, restart the instance with `npx supabase stop` and `npx supabase start` so that the `config.toml` changes take effect.
 
 ### Create the Vault secrets
 
@@ -110,6 +110,7 @@ order by "receivedAt" desc limit 10;
 For how to interpret the result, see [Troubleshoot](#troubleshoot).
 
 > **NOTE:**
+>
 > - Column names match the FastPix API, so they're camelCase and require double quotes in SQL. Use `select "mediaId" from fastpix.media`, not `select mediaId`.
 
 > - The `fastpix` schema isn't exposed in the `[api]` section of `config.toml`. The service role writes these tables, and your client can't read them until you expose a safe view. For more information, see [Secure the tables](#secure-the-tables).
@@ -138,7 +139,7 @@ An application also tracks information that FastPix doesn't own, such as the fol
 `@fastpix/supabase` doesn't save this kind of information, because it's an application-level concern.
 
 > **NOTE:** \
-FastPix media includes a `metadata` field, which the integration saves to the `metadata` JSON column in the `media` table. Higher-level concepts such as titles, chapters, and permissions remain application-level concerns.
+> FastPix media includes a `metadata` field, which the integration saves to the `metadata` JSON column in the `media` table. Higher-level concepts such as titles, chapters, and permissions remain application-level concerns.
 
 ### How webhooks are processed
 
@@ -163,7 +164,7 @@ npx @fastpix/supabase backfill live_streams
 
 Backfill saves its place as it goes, so if it stops, you can run it again and it continues from where it left off.
 
-To heal webhooks that you missed, re-fetch resources that were active in the last *N* hours:
+To heal webhooks that you missed, re-fetch resources that were active in the last _N_ hours:
 
 ```bash
 npx @fastpix/supabase reconcile        # last 24 hours
@@ -348,31 +349,31 @@ npx @fastpix/supabase migrate
 
 ## CLI reference
 
-| Command | Description |
-|---|---|
-| `npx @fastpix/supabase init` | Creates the schema, the four Edge Functions, the pgmq queue, and the cron jobs, then prompts for credentials. Copy-if-absent, so it's safe to re-run. |
-| `npx @fastpix/supabase backfill [media\|live_streams]` | Imports existing FastPix records. Omit the argument to import everything. Resumable. |
-| `npx @fastpix/supabase reconcile [hours]` | Re-fetches resources active in the last *N* hours. Defaults to 24. |
-| `npx @fastpix/supabase migrate` | Creates or updates the `fastpix` tables without copying any files. Run after an engine upgrade. |
+| Command                                                | Description                                                                                                                                           |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npx @fastpix/supabase init`                           | Creates the schema, the four Edge Functions, the pgmq queue, and the cron jobs, then prompts for credentials. Copy-if-absent, so it's safe to re-run. |
+| `npx @fastpix/supabase backfill [media\|live_streams]` | Imports existing FastPix records. Omit the argument to import everything. Resumable.                                                                  |
+| `npx @fastpix/supabase reconcile [hours]`              | Re-fetches resources active in the last _N_ hours. Defaults to 24.                                                                                    |
+| `npx @fastpix/supabase migrate`                        | Creates or updates the `fastpix` tables without copying any files. Run after an engine upgrade.                                                       |
 
 ## Environment variable reference
 
 Set the following variables in `supabase/functions/.env` for local development, and with `npx supabase secrets set` in production.
 
-| Variable | Required by | Description |
-|---|---|---|
-| `FASTPIX_WEBHOOK_SECRET` | All four functions | The FastPix webhook signing secret, used to verify request signatures. Copy it from the FastPix dashboard. |
-| `FASTPIX_TOKEN_ID` | Worker, reconcile, backfill | The FastPix API token ID, used to re-fetch records. |
-| `FASTPIX_TOKEN_SECRET` | Worker, reconcile, backfill | The FastPix API token secret. |
-| `FASTPIX_WORKFLOWS` | Worker | Optional. A JSON map of event types to Edge Function names. For more information, see [Trigger a function when an event syncs](#trigger-a-function-when-an-event-syncs). |
-| `SUPABASE_DB_URL` | The `migrate` command | The Postgres connection string. Supabase injects this into Edge Functions. Find it in the dashboard under **Connect**. |
+| Variable                 | Required by                 | Description                                                                                                                                                              |
+| ------------------------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `FASTPIX_WEBHOOK_SECRET` | All four functions          | The FastPix webhook signing secret, used to verify request signatures. Copy it from the FastPix dashboard.                                                               |
+| `FASTPIX_TOKEN_ID`       | Worker, reconcile, backfill | The FastPix API token ID, used to re-fetch records.                                                                                                                      |
+| `FASTPIX_TOKEN_SECRET`   | Worker, reconcile, backfill | The FastPix API token secret.                                                                                                                                            |
+| `FASTPIX_WORKFLOWS`      | Worker                      | Optional. A JSON map of event types to Edge Function names. For more information, see [Trigger a function when an event syncs](#trigger-a-function-when-an-event-syncs). |
+| `SUPABASE_DB_URL`        | The `migrate` command       | The Postgres connection string. Supabase injects this into Edge Functions. Find it in the dashboard under **Connect**.                                                   |
 
 The following secrets live in Supabase Vault rather than in your environment:
 
-| Secret | Description |
-|---|---|
-| `fastpix_functions_url` | The base URL that the cron jobs call. Use `http://host.docker.internal:54321/functions/v1` locally. |
-| `fastpix_service_role_key` | The service-role key that the cron jobs send as a bearer token. |
+| Secret                     | Description                                                                                         |
+| -------------------------- | --------------------------------------------------------------------------------------------------- |
+| `fastpix_functions_url`    | The base URL that the cron jobs call. Use `http://host.docker.internal:54321/functions/v1` locally. |
+| `fastpix_service_role_key` | The service-role key that the cron jobs send as a bearer token.                                     |
 
 ## Troubleshoot
 
