@@ -1,13 +1,43 @@
-# @fastpix/supabase
+# FastPix Supabase integration - sync and store video in Supabase Postgres
 
-`@fastpix/supabase` provides a CLI that integrates your FastPix account with your Supabase project. The integration mirrors your FastPix media, live streams, and uploads into Postgres, and keeps them current from webhooks.
+[![npm](https://img.shields.io/npm/v/@fastpix/supabase?label=%40fastpix%2Fsupabase)](https://www.npmjs.com/package/@fastpix/supabase)
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933.svg)](https://nodejs.org)
+[![Supabase](https://img.shields.io/badge/Supabase-Edge%20Functions-3ECF8E.svg)](https://supabase.com)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+**`@fastpix/supabase` is a CLI that connects your FastPix account to your Supabase project**, so your FastPix video - media, live streams, and uploads - lives in your own Supabase Postgres database and stays current automatically from webhooks. Wondering whether Supabase can be a video backend? It can: FastPix handles video hosting, encoding, and delivery, and this integration keeps a queryable copy of every video in Supabase, built on the Supabase Edge Functions, pgmq queue, and Supabase Cron you already use.
+
+Ideal for teams building a video app, course platform, or media library on Supabase who want a Supabase video backend: store FastPix video metadata in Postgres, run row-level security on it, and trigger an Edge Function when a video finishes processing - without writing your own webhook sync.
+
+**Works with:** Supabase (local and hosted), Postgres, Deno Edge Functions, Node.js 20+. Powered by [FastPix](https://fastpix.com), the video API platform.
+
+[Get a FastPix account](https://dashboard.fastpix.com) | [FastPix docs](https://fastpix.com/docs) | [npm package](https://www.npmjs.com/package/@fastpix/supabase)
+
+## Start here
+
+New to the integration? Follow these in order:
+
+1. [How it works](#how-it-works)
+2. [Before you begin](#before-you-begin)
+3. [Set up the integration locally](#set-up-the-integration-locally)
+4. [Understand how syncing works](#understand-how-syncing-works)
+5. [Backfill and reconcile data](#backfill-and-reconcile-data)
+6. [Deploy to production](#deploy-to-production)
+7. [Secure the tables](#secure-the-tables)
+8. [FAQ](#faq)
+
+## How it works
+
+![How FastPix syncs into Supabase: webhooks to a pgmq queue to a worker to Postgres](fastpix-supabase-sync-flow.png)
+
+FastPix sends a signed webhook whenever your media, live streams, or uploads change. The `fastpix-webhook` Edge Function verifies the signature and puts the event on a pgmq queue; the `fastpix-worker` Edge Function drains the queue, re-fetches the full record, and writes it into the `fastpix` schema in your Supabase Postgres. A nightly reconcile and a one-off backfill cover anything a webhook misses.
 
 Setting up the integration does the following:
 
 1. Creates a `fastpix` schema that contains the following tables:
-   - `media`, for [Media](https://docs.fastpix.io)
-   - `live_streams`, for [Live Streams](https://docs.fastpix.io)
-   - `uploads`, for [Direct Uploads](https://docs.fastpix.io)
+   - `media`, for [Media](https://fastpix.com/docs/video-on-demand/overview)
+   - `live_streams`, for [Live Streams](https://fastpix.com/docs/live-streaming/overview)
+   - `uploads`, for [Direct Uploads](https://fastpix.com/docs/upload-videos/set-up-resumable-uploads-for-web)
    - `webhook_events`, for the raw webhook event log
    - `sync_state`, for backfill and reconcile bookkeeping
 2. Creates Edge Functions that receive webhooks and keep the data in the `fastpix` schema up to date.
@@ -374,6 +404,37 @@ The following secrets live in Supabase Vault rather than in your environment:
 | -------------------------- | --------------------------------------------------------------------------------------------------- |
 | `fastpix_functions_url`    | The base URL that the cron jobs call. Use `http://host.docker.internal:54321/functions/v1` locally. |
 | `fastpix_service_role_key` | The service-role key that the cron jobs send as a bearer token.                                     |
+
+## FAQ
+
+**Is Supabase a video streaming service?**
+No. Supabase is a Postgres backend; it does not host, encode, or stream video. FastPix is the video platform that does that, and `@fastpix/supabase` keeps a synced copy of your FastPix video data in your Supabase database so you can query it, secure it with row-level security, and build on it.
+
+**Can I use Supabase as a video backend?**
+Yes. Pair Supabase with FastPix: FastPix stores and streams the video, and this integration mirrors the media, live streams, and uploads into your Supabase Postgres and keeps them current from webhooks. If you are looking for a Supabase video hosting solution, this is the pattern - FastPix provides the hosting and delivery, Supabase holds the synced records your app queries.
+
+**How do I store video metadata in Supabase?**
+Run `npx @fastpix/supabase init`. It creates a `fastpix` schema with `media`, `live_streams`, `uploads`, and `webhook_events` tables and the Edge Functions that keep them in sync. Application-level fields (titles, permissions, chapters) stay yours; FastPix metadata is saved for you.
+
+**How does the webhook sync work?**
+The `fastpix-webhook` Edge Function verifies the FastPix signature and enqueues each event on a pgmq queue. The `fastpix-worker` Edge Function drains the queue, so a failed projection never drops a delivery. See [Understand how syncing works](#understand-how-syncing-works).
+
+**Why does it use pgmq and Supabase Cron?**
+pgmq gives durable, at-least-once processing, and two Supabase Cron jobs (a queue drain and a nightly reconcile) keep the data current without you running a server. The `init` command sets both up for you.
+
+**Do I need to pay to use it?**
+The CLI is open source (MIT). It connects to your FastPix account and your Supabase project; use FastPix and Supabase under their own terms.
+
+**Can I run my own logic when a video becomes ready?**
+Yes. Map an event type to an Edge Function with the `FASTPIX_WORKFLOWS` secret - for example, run content moderation when `video.media.ready` fires. See [Trigger a function when an event syncs](#trigger-a-function-when-an-event-syncs).
+
+## Related FastPix tools
+
+- [fastpix-sync-engine](https://github.com/FastPix/fastpix-sync-engine) - the `@fastpix/fp-sync-engine` package this integration runs on.
+- [node-sdk](https://github.com/FastPix/node-sdk) - the FastPix Node.js SDK for calling the API directly.
+- [web-uploads-sdk](https://github.com/FastPix/web-uploads-sdk) - resumable browser uploads to FastPix.
+- [web-player-component](https://github.com/FastPix/web-player-component) - the FastPix web player for playback.
+- [migration-tool](https://github.com/FastPix/migration-tool) - move an existing video library to FastPix.
 
 ## Troubleshoot
 
